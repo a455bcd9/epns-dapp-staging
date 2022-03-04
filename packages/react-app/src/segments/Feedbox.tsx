@@ -6,6 +6,7 @@ import { useWeb3React } from "@web3-react/core";
 import { useSelector, useDispatch } from "react-redux";
 import { envConfig } from "@project/contracts";
 import DisplayNotice from "components/DisplayNotice";
+import { postReq } from "api";
 import SpamBox from "./spam";
 import {
     api,
@@ -19,24 +20,69 @@ import {
     resetState,
     updateTopNotifications,
 } from "redux/slices/notificationSlice";
-import Button from "@material-ui/core/Button/Button";
 
-const NOTIFICATIONS_PER_PAGE = 10;
+const NOTIFICATIONS_PER_PAGE = 100000;
+
 // Create Header
 function Feedbox() {
     const dispatch = useDispatch();
     const { account } = useWeb3React();
-    const { epnsCommReadProvider } = useSelector(
-        (state: any) => state.contracts
-    );
     const { notifications, page, finishedFetching, toggle } = useSelector(
         (state: any) => state.notifications
     );
-
+    
+    const [filteredNotifications , setFilteredNotifications] = React.useState([]);
+    const [filter , setFilter] = React.useState(false);
     const [bgUpdateLoading, setBgUpdateLoading] = React.useState(false);
     const [loading, setLoading] = React.useState(false);
     const [currentTab, setCurrentTab] = React.useState("inbox");
 
+    //                                                          default low date        default high date
+    const filterNotifications = async (query , channels , startDate = "2000-01-01" , endDate = "9999-99-99") => {
+        if(loading)return;
+        setLoading(true);
+        setFilter(!filter);
+        var Filter = {
+            channels : channels , 
+            date : {lowDate : startDate , highDate : endDate}
+        };
+        if(channels.length == 0)delete Filter.channels;
+
+        
+        setFilteredNotifications([]);
+        if(notifications.length >= NOTIFICATIONS_PER_PAGE){
+            try {
+                const {count , results} = await postReq("/feeds/search", {
+                    subscriber : account,
+                    searchTerm: query,
+                    filter: Filter,
+                    isSpam: 0,
+                    page: 1,
+                    pageSize: 5,
+                    op: "read"
+                });
+                const parsedResponse = utils.parseApiResponse(results);
+                setFilteredNotifications([parsedResponse]);
+            }
+            catch (err) {
+                console.log(err);
+            }
+        }
+        else{
+            const regex = new RegExp(`^.*?${query.toLowerCase()}.*?$`);
+            let filterNotif = [];
+            for(const notif of notifications){
+                if(
+                    ( (Filter.channels === undefined ?  true : (Filter.channels.includes(notif.channel)))&&
+                notif.date >= startDate && notif.date <= endDate
+                && await notif.message.toLowerCase().match(regex)!==null )
+                )
+                filterNotif.push(notif);
+            }
+            setFilteredNotifications(filterNotif);
+        }
+        setLoading(false);
+    }
     const loadNotifications = async () => {
         if (loading || finishedFetching) return;
         setLoading(true);
@@ -73,7 +119,16 @@ function Feedbox() {
                 dispatch(incrementPage());
             }
             const parsedResponse = utils.parseApiResponse(results);
-            // replace the first 20 notifications with these
+            const map1 = new Map();
+            const map2 = new Map();
+            results.forEach( each => {
+                map1.set(each.payload.data.sid , each.epoch.substring(0 ,10));
+                map2.set(each.payload.data.sid , each.channel);
+            })
+            parsedResponse.forEach( each => {
+                each.date = map1.get(each.sid);
+                each.channel = map2.get(each.sid);
+            })
             dispatch(
                 updateTopNotifications({
                     notifs: parsedResponse,
@@ -130,6 +185,7 @@ function Feedbox() {
                         />
                     </div>
                 )}
+                <button onClick={()=>filterNotifications("FCM" , [] )}>Click Here</button>
                 <ControlButtonBack
                     active={currentTab == "inbox"}
                     onClick={() => {
@@ -151,15 +207,10 @@ function Feedbox() {
                     }}
                     spam
                 >
-                    {/* spambox */}
-
-                    {/* <Button style={{ border: '2px solid black',width:"35px",height:"45px",borderRadius:"10px" }} > */}
-
                     <ControlImage
                         active={currentTab == "spambox"}
                         src="./spam-icon.png"
                     />
-                    {/* </Button> */}
                 </ControlButton>
             </Wrapper>
 
@@ -169,7 +220,7 @@ function Feedbox() {
                 <Container>
                     {notifications && (
                         <Items id="scrollstyle-secondary">
-                            {notifications.map((oneNotification, index) => {
+                            {(filter? filteredNotifications : notifications).map((oneNotification, index) => {
                                 const {
                                     cta,
                                     title,
@@ -214,7 +265,7 @@ function Feedbox() {
                             width={40}
                         />
                     )}
-                    {!notifications.length && !loading && (
+                    {(!notifications.length || (filter && !filteredNotifications.length)) && !loading && (
                         <CenteredContainerInfo>
                             <DisplayNotice
                                 title="You currently have no notifications, try subscribing to some channels."
